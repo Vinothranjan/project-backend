@@ -5,18 +5,22 @@ import os
 import json
 
 class TelegramManager:
-    def __init__(self, token="8207649837:AAGUPfm6drZxbgNWfLN-Yp98T4yUtQZWyb4", chat_id="7069132483"):
-        self.token = token
-        self.chat_id = chat_id
-        self.api_url = f"https://api.telegram.org/bot{self.token}/"
+    def __init__(self, token=None, chat_id=None):
+        self.token = token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        self.chat_id = chat_id or os.environ.get("TELEGRAM_CHAT_ID", "")
+        self.api_url = f"https://api.telegram.org/bot{self.token}/" if self.token else ""
         self.callbacks = {}
         self.last_update_id = 0
         
-        # Start background polling
-        self.polling_thread = threading.Thread(target=self._poll_updates, daemon=True)
-        self.polling_thread.start()
+        # Start background polling only if credentials exist
+        if self.token and self.chat_id:
+            self.polling_thread = threading.Thread(target=self._poll_updates, daemon=True)
+            self.polling_thread.start()
 
     def send_message(self, text):
+        if not self.api_url:
+            print("Telegram not configured - skipping message")
+            return None
         url = self.api_url + "sendMessage"
         payload = {
             "chat_id": self.chat_id,
@@ -30,6 +34,9 @@ class TelegramManager:
             return None
 
     def send_photo_with_buttons(self, photo_path, caption):
+        if not self.api_url:
+            print("Telegram not configured - skipping photo")
+            return None
         if not os.path.exists(photo_path):
             print(f"Photo path {photo_path} does not exist.")
             return None
@@ -63,6 +70,8 @@ class TelegramManager:
         self.callbacks[key] = function
 
     def _poll_updates(self):
+        if not self.api_url:
+            return
         while True:
             url = self.api_url + f"getUpdates?offset={self.last_update_id + 1}&timeout=10"
             try:
