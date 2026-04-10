@@ -1,6 +1,6 @@
 flask
 flask-cors
-flask-dotenv
+python-dotenv
 opencv-contrib-python
 numpy
 python-telegram-bot

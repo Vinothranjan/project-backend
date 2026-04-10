@@ -16,13 +16,16 @@ from flask import (
 from flask_cors import CORS
 
 # Load .env file (optional - don't fail if not found)
-from dotenv import load_dotenv
-
 try:
-    env_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
-    )
-    load_dotenv(env_path)
+    from dotenv import load_dotenv
+
+    try:
+        env_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
+        )
+        load_dotenv(env_path)
+    except Exception:
+        pass
 except Exception:
     pass
 
