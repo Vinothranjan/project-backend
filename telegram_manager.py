@@ -3,9 +3,13 @@ import threading
 import time
 import os
 import json
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    pass
 
 
 class TelegramManager:

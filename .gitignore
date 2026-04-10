@@ -6,5 +6,6 @@ unknown_face/lingering_*
 unknown_face/hit_run_*
 guest_qr_*.png
 *.pptx
-known_face/*/*.jpg
-known_face/*/*.png
+# Don't ignore known_face - needed for face recognition!
+# known_face/*/*.jpg
+# known_face/*/*.png

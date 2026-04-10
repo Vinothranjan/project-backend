@@ -15,13 +15,16 @@ from flask import (
 )
 from flask_cors import CORS
 
-# Load .env file
+# Load .env file (optional - don't fail if not found)
 from dotenv import load_dotenv
 
-env_path = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
-)
-load_dotenv(env_path)
+try:
+    env_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
+    )
+    load_dotenv(env_path)
+except Exception:
+    pass
 
 # Disable Flask logging
 log = logging.getLogger("werkzeug")
@@ -30,16 +33,44 @@ log.setLevel(logging.ERROR)
 # Add parent directory to path to import local modules
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
-from telegram_manager import TelegramManager
-from camera_utils import get_camera
 
-app = Flask(__name__)
+try:
+    from telegram_manager import TelegramManager
+    from camera_utils import get_camera
+
+    print("Modules imported successfully")
+except Exception as e:
+    print(f"Error importing modules: {e}")
+    TelegramManager = None
+    get_camera = None
+
+app = Flask(
+    __name__,
+    static_folder=os.path.join(os.path.dirname(__file__), "static"),
+    static_url_path="/static",
+)
 CORS(app)
 
 
 class SurveillanceSystem:
     def __init__(self):
-        self.tm = TelegramManager()
+        # Create a dummy Telegram manager if import failed
+        if TelegramManager is None:
+
+            class DummyTM:
+                def send_message(self, *args, **kwargs):
+                    pass
+
+                def send_photo_with_buttons(self, *args, **kwargs):
+                    pass
+
+                def register_callback(self, *args, **kwargs):
+                    pass
+
+            self.tm = DummyTM()
+        else:
+            self.tm = TelegramManager()
+
         self.qr_detector = cv2.QRCodeDetector()
 
         self.webcam = None
@@ -319,11 +350,31 @@ class SurveillanceSystem:
         )
 
         # Encode frame
-        ret, buffer = cv2.imencode(".jpg", im)
-        return buffer.tobytes()
+        try:
+            ret, buffer = cv2.imencode(".jpg", im)
+            if ret:
+                return buffer.tobytes()
+        except Exception as e:
+            print(f"Error encoding frame: {e}")
+        return None
 
 
-system = SurveillanceSystem()
+# Create system object with error handling
+try:
+    system = SurveillanceSystem()
+    print("SurveillanceSystem initialized successfully")
+except Exception as e:
+    print(f"Error initializing SurveillanceSystem: {e}")
+
+    # Create a minimal fallback system
+    class FallbackSystem:
+        webcam = None
+        guest_mode = False
+
+        def get_frame(self):
+            return None
+
+    system = FallbackSystem()
 
 
 @app.route("/")
