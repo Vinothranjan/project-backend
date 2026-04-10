@@ -5,11 +5,18 @@ import numpy as np
 import time
 import threading
 import logging
-from flask import Flask, render_template, Response, jsonify, send_from_directory, request
+from flask import (
+    Flask,
+    render_template,
+    Response,
+    jsonify,
+    send_from_directory,
+    request,
+)
 from flask_cors import CORS
 
 # Disable Flask logging
-log = logging.getLogger('werkzeug')
+log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
 
 # Add parent directory to path to import local modules
@@ -21,28 +28,47 @@ from camera_utils import get_camera
 app = Flask(__name__)
 CORS(app)
 
+
 class SurveillanceSystem:
     def __init__(self):
         self.tm = TelegramManager()
         self.qr_detector = cv2.QRCodeDetector()
-        
+
         self.webcam = None
         self.camera_source = None
         self.guest_mode = False
         self.access_timer = 0
         self.last_unknown_time = 0
         self.is_unknown_lingering = False
-        
+
         # Training data
-        self.haar_file = os.path.join(ROOT_DIR, 'haarcascade_frontalface_default.xml')
-        self.datasets = os.path.join(ROOT_DIR, 'known_face')
+        self.haar_file = os.path.join(ROOT_DIR, "haarcascade_frontalface_default.xml")
+        self.datasets = os.path.join(ROOT_DIR, "known_face")
+        self.unknown_folder = os.path.join(ROOT_DIR, "unknown_face")
         self.names = {}
         self.width, self.height = 130, 100
         self.model = cv2.face.LBPHFaceRecognizer_create()
         self.face_cascade = cv2.CascadeClassifier(self.haar_file)
-        
+
+        # Skip training if Haar cascade fails to load
+        if self.face_cascade.empty():
+            print("Warning: Haar cascade failed to load. Face detection disabled.")
+
+        # Create directories if they don't exist
+        if not os.path.exists(self.datasets):
+            os.makedirs(self.datasets)
+        if not os.path.exists(self.unknown_folder):
+            os.makedirs(self.unknown_folder)
+
+        # Train lazily (don't fail if no faces yet)
         self.train_model()
-        
+
+        # Auto-start camera if CAMERA_URL env is set (for deployment)
+        camera_url = os.environ.get("CAMERA_URL")
+        if camera_url:
+            print(f"Auto-starting camera from CAMERA_URL: {camera_url}")
+            self.start_camera("mobile", camera_url)
+
         # Callbacks
         self.tm.register_callback("allow_entry", self.allow_access)
         self.tm.register_callback("block_entry", self.block_access)
@@ -50,16 +76,17 @@ class SurveillanceSystem:
     def start_camera(self, source_type, url=None):
         if self.webcam is not None:
             self.webcam.release()
-            
+
         source = 0 if source_type == "internal" else url
-        
+
         try:
             if source_type == "mobile" and url:
                 from camera_utils import ThreadedCamera
+
                 self.webcam = ThreadedCamera(url)
             else:
                 self.webcam = cv2.VideoCapture(0)
-                
+
             if self.webcam.isOpened():
                 self.camera_source = source
                 return True
@@ -69,12 +96,12 @@ class SurveillanceSystem:
             return False
 
     def train_model(self):
-        print(f'Training with datasets at: {self.datasets}')
+        print(f"Training with datasets at: {self.datasets}")
         images, labels, self.names, id = [], [], {}, 0
         if not os.path.exists(self.datasets):
             os.makedirs(self.datasets)
-            
-        for (subdirs, dirs, files) in os.walk(self.datasets):
+
+        for subdirs, dirs, files in os.walk(self.datasets):
             for subdir in dirs:
                 self.names[id] = subdir
                 subjectpath = os.path.join(self.datasets, subdir)
@@ -85,7 +112,7 @@ class SurveillanceSystem:
                         images.append(img)
                         labels.append(int(id))
                 id += 1
-        
+
         if len(images) > 0:
             self.model.train(np.array(images), np.array(labels))
             print("Model trained successfully.")
@@ -105,12 +132,17 @@ class SurveillanceSystem:
         if self.webcam is None:
             return None
 
-        success, im = self.webcam.read()
-        if not success:
+        try:
+            success, im = self.webcam.read()
+        except Exception as e:
+            print(f"Error reading frame: {e}")
+            return None
+
+        if not success or im is None:
             return None
 
         current_time = time.time()
-        
+
         # Guest Mode Timer
         if self.guest_mode and current_time > self.access_timer:
             self.guest_mode = False
@@ -123,113 +155,218 @@ class SurveillanceSystem:
             if not self.guest_mode:
                 self.guest_mode = True
                 self.access_timer = current_time + 60
-                self.tm.send_message(f"🔓 QR ACCESS: Guest '{guest_name}' recognized. Entry granted for 60s.")
+                self.tm.send_message(
+                    f"🔓 QR ACCESS: Guest '{guest_name}' recognized. Entry granted for 60s."
+                )
 
-        gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY) 
+        gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
         faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
-        
+
         unknown_in_frame = False
-        
-        for (x, y, w, h) in faces:
+
+        for x, y, w, h in faces:
             cv2.rectangle(im, (x, y), (x + w, y + h), (255, 255, 0), 2)
-            face = gray[y:y + h, x:x + w]
+            face = gray[y : y + h, x : x + w]
             face_resize = cv2.resize(face, (self.width, self.height))
 
             try:
                 prediction = self.model.predict(face_resize)
                 if prediction[1] < 100:
                     name = self.names.get(prediction[0], "Unknown")
-                    cv2.putText(im, f'{name} - {int(prediction[1])}', (x - 10, y - 10), cv2.FONT_HERSHEY_COMPLEX, 1, (51, 255, 255))
+                    cv2.putText(
+                        im,
+                        f"{name} - {int(prediction[1])}",
+                        (x - 10, y - 10),
+                        cv2.FONT_HERSHEY_COMPLEX,
+                        1,
+                        (51, 255, 255),
+                    )
                 else:
                     unknown_in_frame = True
-                    cv2.putText(im, 'Unknown', (x - 10, y - 10), cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0))
+                    cv2.putText(
+                        im,
+                        "Unknown",
+                        (x - 10, y - 10),
+                        cv2.FONT_HERSHEY_PLAIN,
+                        1,
+                        (0, 255, 0),
+                    )
             except:
                 unknown_in_frame = True
-                cv2.putText(im, 'System Not Trained', (x - 10, y - 10), cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255))
+                cv2.putText(
+                    im,
+                    "System Not Trained",
+                    (x - 10, y - 10),
+                    cv2.FONT_HERSHEY_PLAIN,
+                    1,
+                    (0, 0, 255),
+                )
 
         # Threat Intelligence
-        unknown_folder = os.path.join(ROOT_DIR, "unknown_face")
-        if not os.path.isdir(unknown_folder): os.makedirs(unknown_folder)
+        if not os.path.isdir(self.unknown_folder):
+            os.makedirs(self.unknown_folder)
 
         if unknown_in_frame:
             if self.last_unknown_time == 0:
                 self.last_unknown_time = current_time
-            elif current_time - self.last_unknown_time > 3 and not self.is_unknown_lingering:
+            elif (
+                current_time - self.last_unknown_time > 3
+                and not self.is_unknown_lingering
+            ):
                 self.is_unknown_lingering = True
                 timestamp = time.strftime("%Y%m%d_%H%M%S")
-                filename = os.path.join(unknown_folder, f"lingering_{timestamp}.jpg")
+                filename = os.path.join(
+                    self.unknown_folder, f"lingering_{timestamp}.jpg"
+                )
                 cv2.imwrite(filename, im)
-                self.tm.send_photo_with_buttons(filename, "🚨 LINGERING: Unknown person detected for >3s.")
+                self.tm.send_photo_with_buttons(
+                    filename, "🚨 LINGERING: Unknown person detected for >3s."
+                )
         else:
             if self.last_unknown_time != 0:
                 duration = current_time - self.last_unknown_time
                 if duration < 3 and not self.is_unknown_lingering:
                     timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    filename = os.path.join(unknown_folder, f"hit_run_{timestamp}.jpg")
+                    filename = os.path.join(
+                        self.unknown_folder, f"hit_run_{timestamp}.jpg"
+                    )
                     cv2.imwrite(filename, im)
-                    self.tm.send_photo_with_buttons(filename, "🏃 HIT-AND-RUN: Unknown person left frame.")
+                    self.tm.send_photo_with_buttons(
+                        filename, "🏃 HIT-AND-RUN: Unknown person left frame."
+                    )
                 self.last_unknown_time = 0
                 self.is_unknown_lingering = False
 
         # Status Overlay
         status_text = "ACCESS GRANTED" if self.guest_mode else "SECURED"
         status_color = (0, 255, 0) if self.guest_mode else (0, 0, 255)
-        cv2.putText(im, f"STATUS: {status_text}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+        cv2.putText(
+            im,
+            f"STATUS: {status_text}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            status_color,
+            2,
+        )
 
         # Encode frame
-        ret, buffer = cv2.imencode('.jpg', im)
+        ret, buffer = cv2.imencode(".jpg", im)
         return buffer.tobytes()
+
 
 system = SurveillanceSystem()
 
-@app.route('/')
+
+@app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
+
 
 def gen_frames():
+    # Create a placeholder frame for when camera isn't available
+    placeholder_frame = None
+
     while True:
         frame = system.get_frame()
         if frame is not None:
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + frame + b"\r\n")
+        elif placeholder_frame is not None:
+            yield (
+                b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                + placeholder_frame
+                + b"\r\n"
+            )
         else:
-            time.sleep(0.1)
+            # Return static placeholder
+            placeholder_frame = _create_placeholder_frame()
+            if placeholder_frame:
+                yield (
+                    b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                    + placeholder_frame
+                    + b"\r\n"
+                )
+        time.sleep(0.1)
 
-@app.route('/video_feed')
+
+def _create_placeholder_frame():
+    """Create a placeholder image when camera is not available."""
+    import numpy as np
+    import cv2
+
+    # Create a dark background image
+    img = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    # Add "No Camera" text
+    cv2.putText(
+        img,
+        "No Camera Available",
+        (130, 220),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255, 255, 255),
+        2,
+    )
+    cv2.putText(
+        img,
+        "Click 'Change Camera' to select a source",
+        (140, 270),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (200, 200, 200),
+        1,
+    )
+
+    ret, buffer = cv2.imencode(".jpg", img)
+    if ret:
+        return buffer.tobytes()
+    return None
+
+
+@app.route("/video_feed")
 def video_feed():
-    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-@app.route('/api/status')
+
+@app.route("/api/status")
 def get_status():
-    return jsonify({
-        "guest_mode": system.guest_mode,
-        "camera_active": system.webcam is not None and system.webcam.isOpened(),
-        "camera_source": str(system.camera_source),
-        "system_active": True,
-        "access_timer": max(0, int(system.access_timer - time.time())) if system.guest_mode else 0
-    })
+    return jsonify(
+        {
+            "guest_mode": system.guest_mode,
+            "camera_active": system.webcam is not None and system.webcam.isOpened(),
+            "camera_source": str(system.camera_source),
+            "system_active": True,
+            "access_timer": max(0, int(system.access_timer - time.time()))
+            if system.guest_mode
+            else 0,
+        }
+    )
 
-@app.route('/api/start_camera', methods=['POST'])
+
+@app.route("/api/start_camera", methods=["POST"])
 def api_start_camera():
     data = request.get_json()
-    source_type = data.get('type')
-    url = data.get('url')
+    source_type = data.get("type")
+    url = data.get("url")
     success = system.start_camera(source_type, url)
     return jsonify({"success": success})
 
-@app.route('/api/train', methods=['POST'])
+
+@app.route("/api/train", methods=["POST"])
 def api_train():
     system.train_model()
     return jsonify({"success": True})
 
-@app.route('/api/toggle_guest', methods=['POST'])
+
+@app.route("/api/toggle_guest", methods=["POST"])
 def toggle_guest():
     system.guest_mode = not system.guest_mode
     if system.guest_mode:
-        system.access_timer = time.time() + 300 # 5 minutes from web toggle
+        system.access_timer = time.time() + 300  # 5 minutes from web toggle
     return jsonify({"success": True, "guest_mode": system.guest_mode})
 
-@app.route('/api/known_faces')
+
+@app.route("/api/known_faces")
 def get_known_faces():
     # Return list of names and one sample image path for each
     faces = []
@@ -239,13 +376,20 @@ def get_known_faces():
                 faces.append(name)
     return jsonify(faces)
 
-@app.route('/known_face/<path:filename>')
-def serve_known_face(filename):
-    return send_from_directory('known_face', filename)
 
-if __name__ == '__main__':
-    print("\n" + "="*50)
-    print("🚀 AEGIS SURVEILLANCE DASHBOARD IS READY!")
-    print("👉 Open your browser and go to: http://localhost:5000")
-    print("="*50 + "\n")
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+@app.route("/known_face/<path:filename>")
+def serve_known_face(filename):
+    return send_from_directory(system.datasets, filename)
+
+
+@app.route("/unknown_face/<path:filename>")
+def serve_unknown_face(filename):
+    return send_from_directory(system.unknown_folder, filename)
+
+
+if __name__ == "__main__":
+    print("\n" + "=" * 50)
+    print("AEGIS SURVEILLANCE DASHBOARD IS READY!")
+    print("Open your browser and go to: http://localhost:5000")
+    print("=" * 50 + "\n")
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

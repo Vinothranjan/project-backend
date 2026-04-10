@@ -6,11 +6,13 @@ import time
 
 CONFIG_FILE = "camera_settings.json"
 
+
 class ThreadedCamera:
     """
     A wrapper class for cv2.VideoCapture that runs frame reading in a background thread.
     This prevents the MJPEG buffer from filling up, which fixes 'lag' on mobile streams.
     """
+
     def __init__(self, source):
         self.cap = cv2.VideoCapture(source)
         self.ret = False
@@ -28,7 +30,7 @@ class ThreadedCamera:
                 (self.ret, self.frame) = self.cap.read()
             else:
                 self.is_running = False
-            time.sleep(0.01) # Small sleep to avoid CPU hogging
+            time.sleep(0.01)  # Small sleep to avoid CPU hogging
 
     def read(self):
         # Similar signature to cv2.VideoCapture.read()
@@ -42,13 +44,20 @@ class ThreadedCamera:
     def isOpened(self):
         return self.cap.isOpened()
 
-def get_camera():
+
+def get_camera(force_source=None):
     """
     Returns a camera object based on user presence and hardware detection.
     Can be a standard cv2.VideoCapture or our ThreadedCamera for mobile.
+    If force_source is provided, use that directly without prompting.
     """
-    source = 0
-    config_exists = os.path.exists(CONFIG_FILE)
+    # Allow forced source for automated deployment
+    if force_source is not None:
+        source = force_source
+        config_exists = False
+    else:
+        source = 0
+        config_exists = os.path.exists(CONFIG_FILE)
 
     # 1. Load saved config if it exists
     if config_exists:
@@ -65,10 +74,10 @@ def get_camera():
         has_internal_camera = cap_test.isOpened()
         cap_test.release()
 
-        print("\n" + "="*40)
+        print("\n" + "=" * 40)
         print("      CAMERA SETUP & CONFIGURATION      ")
-        print("="*40)
-        
+        print("=" * 40)
+
         if not has_internal_camera:
             print("[NOTICE] No built-in camera detected on this computer.")
             print("You can use your mobile phone as a high-quality camera.")
@@ -79,36 +88,46 @@ def get_camera():
         print("\nHOW TO USE MOBILE CAMERA:")
         print("1. Install 'IP Webcam' on Android.")
         print("2. PRESS 'q' or 'ESC' to stop the application at any time.")
-        
+
         print("\nOPTIONS:")
         if has_internal_camera:
             print("1. Use Laptop/Internal Camera")
         print("2. Use Mobile Camera (IP URL)")
-        
+
         choice = input("\nSelect choice (1 or 2): ").strip()
-        
-        if choice == '2':
+
+        if choice == "2":
             url = input("Enter the IP URL (e.g., http://192.168.1.5:8080): ").strip()
-            
+
             # Smart URL Correction:
-            if url and not any(url.endswith(suffix) for suffix in ["/video", "/shot.jpg", "/live"]):
+            if url and not any(
+                url.endswith(suffix) for suffix in ["/video", "/shot.jpg", "/live"]
+            ):
                 from urllib.parse import urlparse
+
                 parsed = urlparse(url)
                 if parsed.path in ["", "/"]:
-                    url = url.rstrip('/') + "/video"
+                    url = url.rstrip("/") + "/video"
                     print(f"[INFO] Automatically appended '/video' for stream: {url}")
-            
+
             if url:
                 source = url
             else:
-                print("[WARN] No URL provided. " + ("Defaulting to laptop." if has_internal_camera else "Exiting."))
+                print(
+                    "[WARN] No URL provided. "
+                    + ("Defaulting to laptop." if has_internal_camera else "Exiting.")
+                )
                 source = 0 if has_internal_camera else None
         else:
             source = 0 if has_internal_camera else None
 
         if source is not None:
-            save = input("\nDo you want to save this setting for next time? (y/n): ").strip().lower()
-            if save == 'y':
+            save = (
+                input("\nDo you want to save this setting for next time? (y/n): ")
+                .strip()
+                .lower()
+            )
+            if save == "y":
                 with open(CONFIG_FILE, "w") as f:
                     json.dump({"source": source}, f)
                 print(f"[SUCCESS] Settings saved to {CONFIG_FILE}")
@@ -125,7 +144,7 @@ def get_camera():
         cap = ThreadedCamera(source)
     else:
         cap = cv2.VideoCapture(source)
-        
+
     if not cap.isOpened():
         print(f"\n[ERROR] Failed to connect to: {source}")
         if source != 0:
@@ -135,8 +154,9 @@ def get_camera():
                 return None
         else:
             return None
-            
+
     return cap
+
 
 def reset_config():
     """Removes the camera configuration file."""
