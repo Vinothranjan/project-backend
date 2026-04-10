@@ -129,24 +129,41 @@ class SurveillanceSystem:
     def start_camera(self, source_type, url=None):
         if self.webcam is not None:
             self.webcam.release()
+            self.webcam = None
 
-        source = 0 if source_type == "internal" else url
+        # Detect headless/cloud environments (no physical camera available)
+        is_cloud = os.environ.get("RENDER") or os.environ.get("DYNO") or os.environ.get("CLOUD_ENV")
 
-        try:
-            if source_type == "mobile" and url:
+        if source_type == "internal":
+            if is_cloud:
+                print("Internal camera not available in cloud environment.")
+                return False, "Internal camera is not available on cloud deployments. Please use a Mobile/IP Camera URL instead."
+            # Try to open local camera
+            try:
+                cap = cv2.VideoCapture(0)
+                if cap.isOpened():
+                    self.webcam = cap
+                    self.camera_source = 0
+                    return True, "Internal camera started."
+                cap.release()
+                return False, "No internal camera detected on this device."
+            except Exception as e:
+                print(f"Error starting internal camera: {e}")
+                return False, f"Failed to start internal camera: {e}"
+
+        elif source_type == "mobile" and url:
+            try:
                 from camera_utils import ThreadedCamera
-
                 self.webcam = ThreadedCamera(url)
-            else:
-                self.webcam = cv2.VideoCapture(0)
+                if self.webcam.isOpened():
+                    self.camera_source = url
+                    return True, "Mobile/IP camera stream started."
+                return False, f"Could not connect to camera stream at: {url}"
+            except Exception as e:
+                print(f"Error starting mobile camera: {e}")
+                return False, f"Failed to connect to mobile camera: {e}"
 
-            if self.webcam.isOpened():
-                self.camera_source = source
-                return True
-            return False
-        except Exception as e:
-            print(f"Error starting camera: {e}")
-            return False
+        return False, "Invalid camera source type."
 
     def train_model(self):
         print(f"Training with datasets at: {self.datasets}")
@@ -512,8 +529,13 @@ def api_start_camera():
     data = request.get_json()
     source_type = data.get("type")
     url = data.get("url")
-    success = system.start_camera(source_type, url)
-    return jsonify({"success": success})
+    result = system.start_camera(source_type, url)
+    # start_camera returns (success: bool, message: str)
+    if isinstance(result, tuple):
+        success, message = result
+    else:
+        success, message = result, "OK" if result else "Failed to start camera."
+    return jsonify({"success": success, "message": message})
 
 
 @app.route("/api/train", methods=["POST"])
