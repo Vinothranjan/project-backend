@@ -106,12 +106,15 @@ class SurveillanceSystem:
         self.train_model()
 
         # Flag to track if real training data exists
-        self.has_real_training = len(self.names) > 0 and self.names.get(0) != "Demo"
+        # We simply check if we loaded images and trained successfully
+        # The model.train() call sets internal state we can check
+        self.model_is_trained = len(self.names) > 0
+        self.has_real_training = self.model_is_trained and len(self.names) > 0
 
-        # If no faces were trained, create a dummy entry to prevent prediction errors
+        # If no faces were trained, ensure names is empty
         if not self.has_real_training:
-            print("No trained faces - using demo mode")
-            self.names = {0: "Demo"}
+            print("No trained faces")
+            self.names = {}
 
         # Auto-start camera if CAMERA_URL env is set (for deployment)
         camera_url = os.environ.get("CAMERA_URL")
@@ -151,18 +154,34 @@ class SurveillanceSystem:
         if not os.path.exists(self.datasets):
             os.makedirs(self.datasets)
             print(f"Created datasets directory: {self.datasets}")
+        else:
+            # Check if directory is empty
+            subdirs = [
+                d
+                for d in os.listdir(self.datasets)
+                if os.path.isdir(os.path.join(self.datasets, d))
+            ]
+            if not subdirs:
+                print("Warning: No subdirectories found in datasets folder.")
 
-        for subdirs, dirs, files in os.walk(self.datasets):
+        for subdirs_path, dirs, files in os.walk(self.datasets):
             for subdir in dirs:
                 self.names[id] = subdir
                 subjectpath = os.path.join(self.datasets, subdir)
-                for filename in os.listdir(subjectpath):
+                files_in_dir = os.listdir(subjectpath)
+                if not files_in_dir:
+                    print(f"Warning: No files in {subjectpath}")
+                for filename in files_in_dir:
                     path = os.path.join(subjectpath, filename)
                     try:
                         img = cv2.imread(path, 0)
                         if img is not None and img.size > 0:
-                            images.append(img)
-                            labels.append(int(id))
+                            # Ensure image is in correct format
+                            if len(img.shape) == 2:
+                                images.append(img)
+                                labels.append(int(id))
+                            else:
+                                print(f"Warning: Image {path} has wrong format")
                         else:
                             print(f"Warning: Could not read image: {path}")
                     except Exception as e:
@@ -170,8 +189,15 @@ class SurveillanceSystem:
                 id += 1
 
         if len(images) > 0:
-            self.model.train(np.array(images), np.array(labels))
-            print(f"Model trained successfully with {len(images)} images.")
+            try:
+                # Convert to numpy arrays with proper types
+                images_array = np.array(images)
+                labels_array = np.array(labels)
+                self.model.train(images_array, labels_array)
+                print(f"Model trained successfully with {len(images)} images.")
+            except Exception as e:
+                print(f"Error training model: {e}")
+                self.names = {}
         else:
             print("Warning: No face data found for training.")
 
@@ -254,9 +280,8 @@ class SurveillanceSystem:
             if face_resize is None or face_resize.size == 0:
                 continue
 
-            # Skip prediction if model wasn't properly trained
+            # Skip prediction entirely if no real training data
             if not model_trained:
-                unknown_in_frame = True
                 cv2.putText(
                     im,
                     "No Training Data",
@@ -267,10 +292,27 @@ class SurveillanceSystem:
                 )
                 continue
 
+            # Ensure face_resize is valid grayscale image
+            if len(face_resize.shape) != 2:
+                continue
+
             try:
-                # Ensure face_resize is valid grayscale image
-                if len(face_resize.shape) != 2:
+                # Triple-check model is trained before predicting
+                if (
+                    not hasattr(self.model, "labels")
+                    or self.model.labels is None
+                    or len(getattr(self.model.labels, "labels", [])) == 0
+                ):
+                    cv2.putText(
+                        im,
+                        "Model Not Trained",
+                        (x - 10, y - 10),
+                        cv2.FONT_HERSHEY_PLAIN,
+                        1,
+                        (0, 0, 255),
+                    )
                     continue
+
                 prediction = self.model.predict(face_resize)
                 if len(prediction) >= 2 and prediction[1] < 100:
                     name = self.names.get(prediction[0], "Unknown")

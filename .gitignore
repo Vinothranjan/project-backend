@@ -1,11 +1,8 @@
 __pycache__/
 *.pyc
-.env
+# .env - REMOVED to allow deployment with env vars
 camera_settings.json
 unknown_face/lingering_*
 unknown_face/hit_run_*
 guest_qr_*.png
 *.pptx
-# Don't ignore known_face - needed for face recognition!
-# known_face/*/*.jpg
-# known_face/*/*.png
