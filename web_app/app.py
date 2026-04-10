@@ -63,6 +63,14 @@ class SurveillanceSystem:
         # Train lazily (don't fail if no faces yet)
         self.train_model()
 
+        # Flag to track if real training data exists
+        self.has_real_training = len(self.names) > 0 and self.names.get(0) != "Demo"
+
+        # If no faces were trained, create a dummy entry to prevent prediction errors
+        if not self.has_real_training:
+            print("No trained faces - using demo mode")
+            self.names = {0: "Demo"}
+
         # Auto-start camera if CAMERA_URL env is set (for deployment)
         camera_url = os.environ.get("CAMERA_URL")
         if camera_url:
@@ -100,6 +108,7 @@ class SurveillanceSystem:
         images, labels, self.names, id = [], [], {}, 0
         if not os.path.exists(self.datasets):
             os.makedirs(self.datasets)
+            print(f"Created datasets directory: {self.datasets}")
 
         for subdirs, dirs, files in os.walk(self.datasets):
             for subdir in dirs:
@@ -107,15 +116,20 @@ class SurveillanceSystem:
                 subjectpath = os.path.join(self.datasets, subdir)
                 for filename in os.listdir(subjectpath):
                     path = os.path.join(subjectpath, filename)
-                    img = cv2.imread(path, 0)
-                    if img is not None:
-                        images.append(img)
-                        labels.append(int(id))
+                    try:
+                        img = cv2.imread(path, 0)
+                        if img is not None and img.size > 0:
+                            images.append(img)
+                            labels.append(int(id))
+                        else:
+                            print(f"Warning: Could not read image: {path}")
+                    except Exception as e:
+                        print(f"Error reading image {path}: {e}")
                 id += 1
 
         if len(images) > 0:
             self.model.train(np.array(images), np.array(labels))
-            print("Model trained successfully.")
+            print(f"Model trained successfully with {len(images)} images.")
         else:
             print("Warning: No face data found for training.")
 
@@ -138,7 +152,11 @@ class SurveillanceSystem:
             print(f"Error reading frame: {e}")
             return None
 
-        if not success or im is None:
+        if not success or im is None or im.size == 0:
+            return None
+
+        # Validate frame is valid
+        if im.shape[0] == 0 or im.shape[1] == 0:
             return None
 
         current_time = time.time()
@@ -160,18 +178,52 @@ class SurveillanceSystem:
                 )
 
         gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+
+        if self.face_cascade.empty():
+            cv2.putText(
+                im,
+                "Face detector not loaded",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2,
+            )
+            ret, buffer = cv2.imencode(".jpg", im)
+            if ret:
+                return buffer.tobytes()
+            return None
+
         faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
 
         unknown_in_frame = False
+        model_trained = self.has_real_training
 
         for x, y, w, h in faces:
             cv2.rectangle(im, (x, y), (x + w, y + h), (255, 255, 0), 2)
             face = gray[y : y + h, x : x + w]
+
+            if face.size == 0:
+                continue
+
             face_resize = cv2.resize(face, (self.width, self.height))
+
+            # Skip prediction if model wasn't properly trained
+            if not model_trained:
+                unknown_in_frame = True
+                cv2.putText(
+                    im,
+                    "No Training Data",
+                    (x - 10, y - 10),
+                    cv2.FONT_HERSHEY_PLAIN,
+                    1,
+                    (0, 0, 255),
+                )
+                continue
 
             try:
                 prediction = self.model.predict(face_resize)
-                if prediction[1] < 100:
+                if len(prediction) >= 2 and prediction[1] < 100:
                     name = self.names.get(prediction[0], "Unknown")
                     cv2.putText(
                         im,
@@ -191,11 +243,12 @@ class SurveillanceSystem:
                         1,
                         (0, 255, 0),
                     )
-            except:
+            except Exception as e:
+                print(f"Prediction error: {e}")
                 unknown_in_frame = True
                 cv2.putText(
                     im,
-                    "System Not Trained",
+                    "Prediction Error",
                     (x - 10, y - 10),
                     cv2.FONT_HERSHEY_PLAIN,
                     1,
