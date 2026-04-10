@@ -15,6 +15,14 @@ from flask import (
 )
 from flask_cors import CORS
 
+# Load .env file
+from dotenv import load_dotenv
+
+env_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
+)
+load_dotenv(env_path)
+
 # Disable Flask logging
 log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
@@ -208,6 +216,10 @@ class SurveillanceSystem:
 
             face_resize = cv2.resize(face, (self.width, self.height))
 
+            # Validate resized face
+            if face_resize is None or face_resize.size == 0:
+                continue
+
             # Skip prediction if model wasn't properly trained
             if not model_trained:
                 unknown_in_frame = True
@@ -222,6 +234,9 @@ class SurveillanceSystem:
                 continue
 
             try:
+                # Ensure face_resize is valid grayscale image
+                if len(face_resize.shape) != 2:
+                    continue
                 prediction = self.model.predict(face_resize)
                 if len(prediction) >= 2 and prediction[1] < 100:
                     name = self.names.get(prediction[0], "Unknown")
